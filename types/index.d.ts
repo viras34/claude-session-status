@@ -30,9 +30,34 @@ export type Cron = { id: string; schedule: string; recurring: boolean; prompt: s
 export type Session = {
   model: string
   turns: number
-  branch?: string
   repo?: string
-  changed?: number
+}
+
+export type GitFile = { path: string; code: string }
+
+export type Worktree = { path: string; branch?: string; isCurrent: boolean; isMain: boolean }
+
+export type Commit = { hash: string; subject: string; at: number }
+
+export type Pr = { number: number; state: string; title: string; url: string }
+
+export type Git = {
+  root: string
+  branch: string
+  upstream?: string
+  ahead: number
+  behind: number
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
+  files: GitFile[]
+  stashes: number
+  last?: Commit
+  worktrees: Worktree[]
+  web?: string
+  pr?: Pr
+  busy?: string
 }
 
 export type Category = { name: string; tokens: number }
@@ -51,6 +76,8 @@ declare module 'claude-code' {
       activity: Activity
       categories: Category[]
       isDetailed: boolean
+      git: Git | null
+      gitOpen: { files: boolean; worktrees: boolean }
     }
   }
 }

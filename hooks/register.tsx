@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register, RenderChildren, RenderSurface } from 'claude-code'
 
-import type { Activity, Agent, Category, Cron, Limit, Session, Task, Usage } from '../types'
+import type { Activity, Agent, Category, Cron, Git, GitFile, Limit, Session, Task, Usage, Worktree } from '../types'
 
 const PANE = 'session-status'
 const TITLE = 'Status sesji'
@@ -14,6 +14,8 @@ const crons = atom({ plugin: 'session-status', key: 'crons' } as const, [])
 const activity = atom({ plugin: 'session-status', key: 'activity' } as const, { tools: {}, files: [] })
 const categories = atom({ plugin: 'session-status', key: 'categories' } as const, [])
 const isDetailed = atom({ plugin: 'session-status', key: 'isDetailed' } as const, false)
+const git = atom({ plugin: 'session-status', key: 'git' } as const, null)
+const gitOpen = atom({ plugin: 'session-status', key: 'gitOpen' } as const, { files: false, worktrees: false })
 
 const ACTIVE = new Set(['pending', 'running', 'waiting', 'idle'])
 const EDITING = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
@@ -43,6 +45,11 @@ const ICONS = {
   agent: '<rect x="3" y="5" width="10" height="8" rx="2"/><path d="M8 5V2.5M6 9h.01M10 9h.01"/>',
   file: '<path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/>',
   tool: '<path d="M10 2.5a3 3 0 0 0-3 4L2.5 11 5 13.5 9.5 9a3 3 0 0 0 4-3l-2 .5-1-1 .5-2z"/>',
+  worktree: '<path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H6l1.5 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/><path d="M6 8h4M8 6v4"/>',
+  commit: '<circle cx="8" cy="8" r="2.5"/><path d="M2 8h3.5M10.5 8H14"/>',
+  stash: '<path d="M2.5 9.5v3h11v-3M5 7l3 3 3-3M8 2.5V10"/>',
+  pr: '<circle cx="4.5" cy="4" r="1.5"/><circle cx="4.5" cy="12" r="1.5"/><circle cx="11.5" cy="12" r="1.5"/><path d="M4.5 5.5v5M11.5 10.5V6.5a2 2 0 0 0-2-2H7M8.5 3 7 4.5 8.5 6"/>',
+  warn: '<path d="M8 2.5 14 13H2z"/><path d="M8 7v2.5M8 11.2h.01"/>',
 } as const
 type IconName = keyof typeof ICONS
 
@@ -180,6 +187,143 @@ function Share(draw: Draw, tokens: number, window: number) {
   )
 }
 
+function changesOf(g: Git): string {
+  const parts: string[] = []
+  if (g.staged) parts.push(`${g.staged} w indeksie`)
+  if (g.unstaged) parts.push(`${g.unstaged} zmienionych`)
+  if (g.untracked) parts.push(`${g.untracked} nowych`)
+  return parts.length > 0 ? parts.join(' · ') : 'Brak zmian'
+}
+
+function syncOf(g: Git): string {
+  if (!g.upstream) return 'bez upstreamu'
+  if (!g.ahead && !g.behind) return `zgodna z ${g.upstream}`
+  return `↑${g.ahead} ↓${g.behind} względem ${g.upstream}`
+}
+
+function GitCard($: EngineInterface, draw: Draw, g: Git, open: { files: boolean; worktrees: boolean }, now: number) {
+  const { Box, Text, Button, Link } = draw.els
+  const here = g.worktrees.find(w => w.isCurrent)
+  const main = g.worktrees.find(w => w.isMain)
+  const isWorktree = here !== undefined && !here.isMain
+  const dirty = g.staged + g.unstaged + g.untracked + g.conflicted
+  const canPush = g.ahead > 0 || (!g.upstream && g.branch !== 'HEAD')
+  const pushArgs = g.upstream ? ['push'] : ['push', '-u', 'origin', g.branch]
+  const others = g.worktrees.filter(w => !w.isCurrent)
+  // Linki do gałęzi tylko, gdy istnieje na origin: lokalnej gałęzi bez upstreamu GitHub nie zna.
+  const remote = g.upstream?.startsWith('origin/') ? g.upstream.slice(7) : undefined
+
+  return Card(draw, 'Git', g.busy ? Value(draw, `${g.busy}…`) : Value(draw, basename(main?.path ?? g.root)), [
+    Row(
+      draw,
+      'branch',
+      g.branch,
+      <Button
+        key="copy-branch"
+        label="⧉"
+        plain
+        dimColor
+        onPress={press => void $.ui.copy({ text: g.branch, surface: press.surface })}
+      />,
+      syncOf(g),
+    ),
+    g.worktrees.length > 1 || isWorktree
+      ? Row(
+          draw,
+          'worktree',
+          isWorktree ? basename(g.root) : 'Główne repozytorium',
+          <Button
+            key="toggle-worktrees"
+            label={`${g.worktrees.length} worktree`}
+            plain
+            dimColor
+            onPress={() => quiet(toggleGit($, 'worktrees'))}
+          />,
+          isWorktree ? `worktree w ${basename(main?.path ?? '')}` : g.root,
+        )
+      : null,
+    ...(open.worktrees
+      ? others.map(w =>
+          Row(
+            draw,
+            null,
+            `   ${w.branch ?? '(detached)'}`,
+            <Button
+              key={`copy-${w.path}`}
+              label="⧉"
+              plain
+              dimColor
+              onPress={press => void $.ui.copy({ text: w.path, surface: press.surface })}
+            />,
+            `   ${w.isMain ? 'główne · ' : ''}${basename(w.path)}`,
+          ),
+        )
+      : []),
+    g.last
+      ? Row(draw, 'commit', g.last.subject, undefined, `${g.last.hash} · ${duration(now - g.last.at)} temu`)
+      : null,
+    Row(
+      draw,
+      'file',
+      changesOf(g),
+      dirty > 0 ? (
+        <Button
+          key="toggle-files"
+          label={open.files ? 'Ukryj' : 'Pliki'}
+          plain
+          dimColor
+          onPress={() => quiet(toggleGit($, 'files'))}
+        />
+      ) : undefined,
+    ),
+    ...(open.files
+      ? g.files.slice(0, 12).map(f => (
+          <Box flexDirection="row" gap={gapOf(draw, 1, 1)}>
+            <Text color={f.code === 'U' ? 'error' : f.code === '??' ? 'subtle' : 'warning'}>{f.code.padEnd(2)}</Text>
+            <Text dimColor wrap="truncate-start">
+              {f.path}
+            </Text>
+          </Box>
+        ))
+      : []),
+    open.files && g.files.length > 12 ? <Text dimColor>i {g.files.length - 12} więcej</Text> : null,
+    g.conflicted > 0 ? Row(draw, 'warn', `${g.conflicted} konfliktów do rozwiązania`) : null,
+    g.stashes > 0 ? Row(draw, 'stash', 'Stash', Value(draw, `${g.stashes}`)) : null,
+    g.pr ? Row(draw, 'pr', `#${g.pr.number} ${g.pr.title}`, Value(draw, g.pr.state.toLowerCase())) : null,
+    <Box flexDirection="row" gap={gapOf(draw, 1, 1)} flexWrap="wrap">
+      <Button key="git-fetch" label="Fetch" variant="secondary" onPress={() => quiet(runGit($, 'Fetch', ['fetch', '--prune']))} />
+      {g.behind > 0 ? (
+        <Button key="git-pull" label={`Pull ↓${g.behind}`} variant="secondary" onPress={() => quiet(runGit($, 'Pull', ['pull', '--ff-only']))} />
+      ) : null}
+      {canPush ? (
+        <Button
+          key="git-push"
+          label={g.upstream ? `Push ↑${g.ahead}` : 'Publikuj gałąź'}
+          variant="secondary"
+          onPress={() => quiet(runGit($, 'Push', pushArgs))}
+        />
+      ) : null}
+      {others.length > 0 && open.worktrees ? (
+        <Button key="git-prune" label="Prune worktree" variant="secondary" onPress={() => quiet(runGit($, 'Prune', ['worktree', 'prune', '-v']))} />
+      ) : null}
+    </Box>,
+    g.web ? (
+      <Box flexDirection="row" gap={gapOf(draw, 2, 2)} flexWrap="wrap">
+        {g.pr ? (
+          <Link href={g.pr.url} label={`Otwórz PR #${g.pr.number}`} />
+        ) : remote ? (
+          <Link href={`${g.web}/compare/${remote}?expand=1`} label="Utwórz PR" />
+        ) : null}
+        {remote ? (
+          <Link href={`${g.web}/tree/${remote}`} label="Gałąź na GitHubie" />
+        ) : (
+          <Link href={g.web} label="Repozytorium na GitHubie" />
+        )}
+      </Box>
+    ) : null,
+  ])
+}
+
 function statusLine(u: Usage | null, agentList: Agent[], taskList: Task[]): string | undefined {
   if (!u) return undefined
   const parts: string[] = []
@@ -218,15 +362,105 @@ async function refresh($: EngineInterface): Promise<void> {
 async function refreshSession($: EngineInterface): Promise<void> {
   const [model, turns, repo] = await Promise.all([$.session.model(), $.session.turns(), $.session.repo()])
   const info: Session = { model, turns, repo: repo?.name ?? undefined }
-  if (repo) {
-    const [head, status] = await Promise.all([
-      $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 5000 }),
-      $.process.run(['git', 'status', '--porcelain'], { timeoutMs: 5000 }),
-    ])
-    if (head.exitCode === 0) info.branch = head.stdout.trim()
-    if (status.exitCode === 0) info.changed = status.stdout.split('\n').filter(line => line.trim()).length
-  }
   await update($, session, () => info)
+}
+
+function parseStatus(text: string) {
+  const out = { branch: 'HEAD', upstream: undefined as string | undefined, ahead: 0, behind: 0 }
+  const counts = { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }
+  const files: GitFile[] = []
+  for (const line of text.split('\n')) {
+    if (line.startsWith('# branch.head ')) out.branch = line.slice(14)
+    else if (line.startsWith('# branch.upstream ')) out.upstream = line.slice(18)
+    else if (line.startsWith('# branch.ab ')) {
+      const [a, b] = line.slice(12).split(' ')
+      out.ahead = Number(a?.slice(1) ?? 0)
+      out.behind = Number(b?.slice(1) ?? 0)
+    } else if (line.startsWith('? ')) {
+      counts.untracked += 1
+      files.push({ path: line.slice(2), code: '??' })
+    } else if (line.startsWith('u ')) {
+      counts.conflicted += 1
+      files.push({ path: line.split(' ').slice(10).join(' '), code: 'U' })
+    } else if (line.startsWith('1 ') || line.startsWith('2 ')) {
+      const parts = line.split(' ')
+      const xy = parts[1] ?? '..'
+      if (xy[0] !== '.') counts.staged += 1
+      if (xy[1] !== '.') counts.unstaged += 1
+      const path = parts.slice(line.startsWith('1 ') ? 8 : 9).join(' ').split('\t')[0] ?? ''
+      files.push({ path, code: xy.replace(/\./g, ' ').trim() })
+    }
+  }
+  return { ...out, ...counts, files }
+}
+
+function parseWorktrees(text: string, root: string): Worktree[] {
+  return text
+    .split('\n\n')
+    .map(block => block.split('\n'))
+    .filter(lines => lines[0]?.startsWith('worktree '))
+    .map((lines, i): Worktree => {
+      const path = lines[0]?.slice(9) ?? ''
+      const ref = lines.find(l => l.startsWith('branch '))?.slice(7)
+      return { path, branch: ref?.replace('refs/heads/', ''), isCurrent: path === root, isMain: i === 0 }
+    })
+}
+
+function webOf(remote: string): string | undefined {
+  const match = remote.trim().match(/github\.com[:/]([^/]+)\/(.+?)(\.git)?$/)
+  return match ? `https://github.com/${match[1]}/${match[2]}` : undefined
+}
+
+async function refreshGit($: EngineInterface): Promise<void> {
+  const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { timeoutMs: 5000 })
+  if (top.exitCode !== 0) {
+    await update($, git, () => null)
+    return
+  }
+  const root = top.stdout.trim()
+  const [status, last, trees, stash, remote] = await Promise.all([
+    $.process.run(['git', 'status', '--porcelain=v2', '--branch'], { timeoutMs: 5000 }),
+    $.process.run(['git', 'log', '-1', '--format=%h%x1f%s%x1f%ct'], { timeoutMs: 5000 }),
+    $.process.run(['git', 'worktree', 'list', '--porcelain'], { timeoutMs: 5000 }),
+    $.process.run(['git', 'stash', 'list'], { timeoutMs: 5000 }),
+    $.process.run(['git', 'remote', 'get-url', 'origin'], { timeoutMs: 5000 }),
+  ])
+  const parsed = parseStatus(status.stdout)
+  const [hash, subject, at] = last.stdout.trim().split('\x1f')
+  await update($, git, (old): Git => ({
+    root,
+    ...parsed,
+    stashes: stash.stdout.split('\n').filter(l => l.trim()).length,
+    last: hash ? { hash, subject: subject ?? '', at: Number(at) * 1000 } : undefined,
+    worktrees: trees.exitCode === 0 ? parseWorktrees(trees.stdout, root) : [],
+    web: remote.exitCode === 0 ? webOf(remote.stdout) : undefined,
+    pr: old?.branch === parsed.branch ? old.pr : undefined,
+    busy: old?.busy,
+  }))
+}
+
+// gh bywa wolny i może go nie być: PR odświeżamy rzadziej i bez błędu, gdy się nie uda.
+async function refreshPr($: EngineInterface): Promise<void> {
+  const view = await $.process.run(['gh', 'pr', 'view', '--json', 'number,state,title,url'], { timeoutMs: 10000 })
+  const pr = view.exitCode === 0 ? (JSON.parse(view.stdout) as Git['pr']) : undefined
+  await update($, git, old => (old ? { ...old, pr } : old))
+}
+
+async function runGit($: EngineInterface, label: string, args: string[]): Promise<void> {
+  await update($, git, old => (old ? { ...old, busy: label } : old))
+  try {
+    const ran = await $.process.run(['git', ...args], { timeoutMs: 120000 })
+    const said = (ran.exitCode === 0 ? ran.stdout || ran.stderr : ran.stderr || ran.stdout).trim().split('\n')
+    const line = said[said.length - 1] ?? ''
+    $.ui.toast(ran.exitCode === 0 ? `${label}: ${line || 'gotowe'}` : `${label} nie powiódł się: ${line}`)
+  } finally {
+    await update($, git, old => (old ? { ...old, busy: undefined } : old))
+    await refreshGit($)
+  }
+}
+
+async function toggleGit($: EngineInterface, part: 'files' | 'worktrees'): Promise<void> {
+  await update($, gitOpen, open => ({ ...open, [part]: !open[part] }))
 }
 
 async function refreshCategories($: EngineInterface): Promise<void> {
@@ -280,9 +514,13 @@ export const register: Register = on => {
     fast?.cancel()
     slow?.cancel()
     fast = $.clock.every(5000, () => quiet(refresh($)))
-    slow = $.clock.every(20000, () => quiet(refreshSession($)))
+    slow = $.clock.every(20000, () => {
+      quiet(refreshSession($))
+      quiet(refreshGit($))
+    })
     quiet(refresh($))
     quiet(refreshSession($))
+    quiet(refreshGit($).then(() => refreshPr($)))
 
     return started
   })
@@ -291,6 +529,7 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: TITLE })
     quiet(refresh($))
     quiet(refreshSession($))
+    quiet(refreshGit($).then(() => refreshPr($)))
 
     return { text: 'Panel statusu sesji otwarty.' }
   })
@@ -331,6 +570,7 @@ export const register: Register = on => {
         await update($, tasks, list => [...list.filter(t => t.id !== id), task])
       }
     }
+    if (e.tool === 'Bash' || EDITING.has(e.tool)) quiet(refreshGit($))
     if (e.tool === 'TaskStop' && e.task_id) {
       const id = e.task_id
       await update($, tasks, list => list.filter(t => t.id !== id))
@@ -366,6 +606,7 @@ export const register: Register = on => {
     )
     quiet(refresh($))
     quiet(refreshSession($))
+    quiet(refreshGit($).then(() => refreshPr($)))
 
     return next(e)
   })
@@ -395,6 +636,7 @@ export const register: Register = on => {
       read($, isDetailed),
       $.clock.now(),
     ])
+    const [repoGit, open] = await Promise.all([read($, git), read($, gitOpen)])
 
     const live = agentList.filter(a => ACTIVE.has(a.status))
     const ended = agentList.filter(a => !ACTIVE.has(a.status)).slice(-4).reverse()
@@ -405,9 +647,6 @@ export const register: Register = on => {
 
     const sessionCard = Card(draw, 'Sesja', info?.repo ? Value(draw, info.repo) : null, [
       Row(draw, 'model', info?.model ?? '…'),
-      info?.branch
-        ? Row(draw, 'branch', info.branch, Value(draw, info.changed ? `${info.changed} zmian` : 'czysto'))
-        : null,
       Row(draw, 'clock', 'Czas trwania', Value(draw, u?.startedAt ? duration(now - u.startedAt) : '—')),
       Row(draw, 'chat', 'Prompty', Value(draw, `${info?.turns ?? 0}`)),
       u?.usd !== undefined ? Row(draw, 'cost', 'Koszt', Value(draw, `$${u.usd.toFixed(2)}`)) : null,
@@ -520,6 +759,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {sessionCard}
+        {repoGit ? GitCard($, draw, repoGit, open, now) : null}
         {contextCard}
         {limitsCard}
         {tasksCard}

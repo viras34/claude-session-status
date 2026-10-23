@@ -6,7 +6,8 @@ UI text is in Polish.
 
 ## What it shows
 
-- **Sesja**: model, git branch with uncommitted change count, session duration, prompt count, cost.
+- **Sesja**: model, session duration, prompt count, cost.
+- **Git**: branch with ahead/behind its upstream, worktree (and the other worktrees of the repo, with copy-path buttons), last commit, staged/changed/new files (expandable list), conflicts, stash, the branch's PR (via `gh`). Buttons: Fetch, Pull (fast-forward only), Push or Publish branch, Prune worktree, plus links to open or create the PR and to the branch on GitHub.
 - **Kontekst**: context window fill with a meter and token count; *Szczegóły* expands the biggest categories, *Kompaktuj* runs `/compact`.
 - **Limity**: 5-hour and weekly rate-limit windows with time to reset.
 - **Zadania w tle**: background shells (with a ■ button to stop each), scheduled wakeups (`/loop`, crons), finished count.
