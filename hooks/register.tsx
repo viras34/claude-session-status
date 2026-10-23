@@ -169,6 +169,17 @@ function Gauge(draw: Draw, percent: number) {
   )
 }
 
+// Udział kategorii w oknie kontekstu: tokeny i ten sam pasek co w nagłówku karty.
+function Share(draw: Draw, tokens: number, window: number) {
+  const { Box, Text } = draw.els
+  return (
+    <Box flexDirection="row" alignItems="center" gap={gapOf(draw, 1, 1)}>
+      <Text dimColor>{kTokens(tokens)}</Text>
+      {Meter(draw, window > 0 ? (tokens / window) * 100 : 0)}
+    </Box>
+  )
+}
+
 function statusLine(u: Usage | null, agentList: Agent[], taskList: Task[]): string | undefined {
   if (!u) return undefined
   const parts: string[] = []
@@ -221,7 +232,7 @@ async function refreshSession($: EngineInterface): Promise<void> {
 async function refreshCategories($: EngineInterface): Promise<void> {
   const measured = await $.session.usage({ breakdown: 'summary' })
   const rows = (measured.context.breakdown?.categories ?? [])
-    .filter(c => !c.isDeferred && c.tokens > 0 && c.name !== 'Free space')
+    .filter(c => c.kind === 'used' && c.tokens > 0)
     .sort((a, b) => b.tokens - a.tokens)
     .slice(0, 6)
     .map((c): Category => ({ name: c.name, tokens: c.tokens }))
@@ -412,7 +423,7 @@ export const register: Register = on => {
             ? `${kTokens(u.tokens)} z ${kTokens(u.window)} tokenów`
             : 'odczyt po pierwszej odpowiedzi'}
         </Text>,
-        ...(detailed ? cats.map(c => Row(draw, null, c.name, Value(draw, kTokens(c.tokens)))) : []),
+        ...(detailed ? cats.map(c => Row(draw, null, c.name, Share(draw, c.tokens, u?.window ?? 0))) : []),
         <Box flexDirection="row" gap={gapOf(draw, 1, 1)}>
           <Button
             key="details"

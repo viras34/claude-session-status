@@ -1,3 +1,4 @@
+import type { SessionContextBreakdown } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = {
@@ -23,7 +24,17 @@ test('panel pokazuje kontekst, limity, procesy i agentów', async ($, on) => {
   on('session.usage', () => ({
     value: {
       startedAt: 0,
-      context: { tokens: 84000, window: 200000, percent: 42 },
+      context: {
+        tokens: 84000,
+        window: 200000,
+        percent: 42,
+        breakdown: {
+          categories: [
+            { name: 'System prompt', tokens: 12000, color: 'x', isDeferred: false, kind: 'used' },
+            { name: 'Messages', tokens: 60000, color: 'x', isDeferred: false, kind: 'used' },
+          ],
+        } as unknown as SessionContextBreakdown,
+      },
       rateLimits: [
         { kind: 'five_hour', percentUsed: 31.5, resetsAt: '2099-01-01T00:00:00Z' },
         { kind: 'seven_day', percentUsed: 88 },
@@ -58,6 +69,10 @@ test('panel pokazuje kontekst, limity, procesy i agentów', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /claude-opus-5-5/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /reset za/ })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'stop-b1' })).toBeTruthy()
+    await ui.press({ key: 'details' })
+    expect(await ui.find({ type: 'Text', text: /System prompt/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^60k$/ })).toBeTruthy()
+    await ui.press({ key: 'details' })
     await ui.unmount()
   }
 })
