@@ -1,0 +1,6 @@
+{
+  "name": "session-status",
+  "version": "0.1.0",
+  "description": "Panel i status line z kontekstem, limitami 5h/7d, kosztem, procesami w tle, cronami i agentami sesji",
+  "types": "./types/index.d.ts"
+}
